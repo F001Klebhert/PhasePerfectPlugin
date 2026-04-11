@@ -2,39 +2,51 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <vector>
-#include <algorithm>
 
-// Filtre All-Pass de Schroeder pour décorréler la phase en temps réel
-class SchroederAllPass {
+// Un délai simple pour créer un rebond acoustique naturel
+class SimpleDelay {
 public:
-    SchroederAllPass() : delayBuffer(4096, 0.0f), writeIndex(0), delaySamples(100), gain(0.6f) {}
-
-    void prepare(double sampleRate, float delayMs, float feedbackGain) {
+    SimpleDelay() {}
+    void prepare(double sampleRate, float delayMs) {
+        buffer.assign(static_cast<size_t>(sampleRate * 2.0), 0.0f);
         delaySamples = static_cast<int>(sampleRate * (delayMs / 1000.0f));
-        gain = feedbackGain;
-        std::fill(delayBuffer.begin(), delayBuffer.end(), 0.0f);
-        writeIndex = 0;
+        writePos = 0;
     }
-
-    float processSample(float input) {
-        int readIndex = writeIndex - delaySamples;
-        if (readIndex < 0) readIndex += delayBuffer.size();
-
-        float delayedSample = delayBuffer[readIndex];
-        float output = -gain * input + delayedSample + gain * delayedSample;
-        delayBuffer[writeIndex] = input + gain * delayedSample;
-        
-        writeIndex++;
-        if (writeIndex >= delayBuffer.size()) writeIndex = 0;
-        
+    float process(float input) {
+        buffer[writePos] = input;
+        int readPos = writePos - delaySamples;
+        if (readPos < 0) readPos += buffer.size();
+        float output = buffer[readPos];
+        writePos++;
+        if (writePos >= buffer.size()) writePos = 0;
         return output;
     }
-
 private:
-    std::vector<float> delayBuffer;
-    int writeIndex;
-    int delaySamples;
-    float gain;
+    std::vector<float> buffer;
+    int writePos = 0;
+    int delaySamples = 0;
+};
+
+// Filtre coupe-bas pour garder les basses fréquences strictement au centre
+class SimpleHPF {
+public:
+    void prepare(double sampleRate, float cutoffFreq) {
+        float dt = 1.0f / sampleRate;
+        float rc = 1.0f / (6.28318530718f * cutoffFreq); // 2 * PI * Freq
+        alpha = rc / (rc + dt);
+        y_prev = 0.0f;
+        x_prev = 0.0f;
+    }
+    float process(float x) {
+        float y = alpha * (y_prev + x - x_prev);
+        x_prev = x;
+        y_prev = y;
+        return y;
+    }
+private:
+    float alpha = 0.0f;
+    float y_prev = 0.0f;
+    float x_prev = 0.0f;
 };
 
 class VSTiPhasePerfectWidener : public juce::AudioProcessor {
@@ -49,7 +61,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override { return new juce::GenericAudioProcessorEditor(*this); }
     bool hasEditor() const override { return true; }
     
-    const juce::String getName() const override { return "VSTi Phase-Perfect Widener"; }
+    const juce::String getName() const override { return "Natural Phase-Perfect Stereo"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -65,9 +77,8 @@ public:
 
 private:
     juce::AudioProcessorValueTreeState apvts;
-    SchroederAllPass apf1;
-    SchroederAllPass apf2;
-    SchroederAllPass apf3;
+    SimpleDelay delay;
+    SimpleHPF hpf;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VSTiPhasePerfectWidener)
 };
