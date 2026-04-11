@@ -4,16 +4,15 @@
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Contrôle d'intensité de l'effet
+    // Le bouton contrôlera la largeur de la pièce virtuelle
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("width", 1), "Extra Stereo Width", 
+        juce::ParameterID("width", 1), "Natural Stereo Width", 
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f));
         
     return layout;
 }
 
 VSTiPhasePerfectWidener::VSTiPhasePerfectWidener()
-    // C'EST ICI QUE MANQUAIENT LES "juce::" !
     : juce::AudioProcessor(juce::AudioProcessor::BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
@@ -22,10 +21,10 @@ VSTiPhasePerfectWidener::VSTiPhasePerfectWidener()
 }
 
 void VSTiPhasePerfectWidener::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    // Préparation des filtres avec des temps en millisecondes basés sur des nombres premiers
-    apf1.prepare(sampleRate, 2.3f, 0.6f);
-    apf2.prepare(sampleRate, 3.7f, 0.6f);
-    apf3.prepare(sampleRate, 5.1f, 0.6f);
+    // 20ms est le point idéal pour que le cerveau entende une pièce, pas un écho
+    delay.prepare(sampleRate, 20.0f);
+    // On coupe tout ce qui est sous 250Hz dans les côtés pour garder la basse ferme
+    hpf.prepare(sampleRate, 250.0f);
 }
 
 void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
@@ -35,30 +34,27 @@ void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juc
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    // Récupérer la valeur du bouton de largeur sur l'interface
     float widthParam = apvts.getRawParameterValue("width")->load();
 
     for (int i = 0; i < numSamples; ++i) {
         float inL = channelDataL[i];
         float inR = channelDataR[i];
 
-        // 1. SÉPARATION MID / SIDE
+        // 1. On crée un noyau central 100% stable et intact
         float mid = (inL + inR) * 0.5f;
-        float originalSide = (inL - inR) * 0.5f;
 
-        // 2. GÉNÉRATION DE STÉRÉO ARTIFICIELLE À PARTIR DU CENTRE
-        float artificialSide = apf1.processSample(mid);
-        artificialSide = apf2.processSample(artificialSide);
-        artificialSide = apf3.processSample(artificialSide);
+        // 2. On génère l'espace stéréo naturel (Effet psychoacoustique Haas)
+        float space = delay.process(mid);
+        space = hpf.process(space);
 
-        // Application du volume
-        artificialSide *= widthParam;
+        // On applique le volume choisi par l'utilisateur
+        space *= widthParam;
 
-        // 3. RECOMBINAISON PARFAITE
-        float totalSide = originalSide + artificialSide;
-
-        channelDataL[i] = mid + totalSide;
-        channelDataR[i] = mid - totalSide;
+        // 3. LA MAGIE DE LA PHASE : 
+        // L = Centre + Espace  |  R = Centre - Espace
+        // En Mono, l'Espace s'annule à 100%. Il ne reste que le Centre pur !
+        channelDataL[i] = mid + space;
+        channelDataR[i] = mid - space;
     }
 }
 
