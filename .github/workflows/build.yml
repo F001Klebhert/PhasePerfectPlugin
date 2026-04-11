@@ -1,0 +1,25 @@
+name: Build VST3 Windows
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Récupérer les fichiers
+      uses: actions/checkout@v4
+
+    - name: Préparer CMake
+      run: cmake -B build
+
+    - name: Compiler le VST3 (Cela prend environ 5 à 10 minutes)
+      run: cmake --build build --config Release
+
+    - name: Sauvegarder le fichier VST3 final
+      uses: actions/upload-artifact@v4
+      with:
+        name: MonPlugin_VST3
+        path: build/PhasePerfectWidener_artefacts/Release/VST3/PhasePerfectWidener.vst3
