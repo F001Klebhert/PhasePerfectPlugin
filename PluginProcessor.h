@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include <vector>
+#include <algorithm>
 
 // Filtre All-Pass de Schroeder pour décorréler la phase en temps réel
 class SchroederAllPass {
