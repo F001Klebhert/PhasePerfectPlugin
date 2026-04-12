@@ -4,14 +4,14 @@
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Fréquence en dessous de laquelle le son devient 100% Mono (Phase +1)
+    // Fréquence par défaut à 150 Hz (La norme du Mastering pour sauver la réverbe)
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("cutoff", 1), "Mono Phase Freq (Hz)", 
-        juce::NormalisableRange<float>(20.0f, 2000.0f, 1.0f, 0.5f), 800.0f));
+        juce::ParameterID("cutoff", 1), "Mono Bass Freq (Hz)", 
+        juce::NormalisableRange<float>(20.0f, 500.0f, 1.0f, 0.5f), 150.0f));
         
-    // Largeur stéréo préservée (ou amplifiée) pour les aigus
+    // Largeur stéréo. Par défaut à 1.0 pour un timbre EXACTEMENT inaltéré.
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("width", 1), "High Freq Width", 
+        juce::ParameterID("width", 1), "Stereo Width", 
         juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f));
         
     return layout;
@@ -36,11 +36,9 @@ void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juc
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    // Récupérer les réglages des boutons
     float cutoffFreq = apvts.getRawParameterValue("cutoff")->load();
     float widthParam = apvts.getRawParameterValue("width")->load();
 
-    // Mettre à jour la fréquence cible du correcteur
     crossover.setFreq(cutoffFreq);
 
     for (int i = 0; i < numSamples; ++i) {
@@ -48,7 +46,7 @@ void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juc
         float inR = channelDataR[i];
         float outL = 0.0f, outR = 0.0f;
 
-        // Le moteur fait le calcul de séparation de phase sans dénaturer le timbre
+        // Le moteur Linkwitz-Riley garantit un timbre flat sans comb filtering
         crossover.process(inL, inR, outL, outR, widthParam);
 
         channelDataL[i] = outL;
