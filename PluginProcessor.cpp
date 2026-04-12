@@ -4,15 +4,10 @@
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Fréquence par défaut à 150 Hz (La norme du Mastering pour sauver la réverbe)
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("cutoff", 1), "Mono Bass Freq (Hz)", 
-        juce::NormalisableRange<float>(20.0f, 500.0f, 1.0f, 0.5f), 150.0f));
-        
-    // Largeur stéréo. Par défaut à 1.0 pour un timbre EXACTEMENT inaltéré.
+    // Width Control. 1.0 = Original Stereo. 0.0 = Phase Perfect Mono (without losing reverb)
     layout.add(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("width", 1), "Stereo Width", 
-        juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f));
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
         
     return layout;
 }
@@ -26,7 +21,9 @@ VSTiPhasePerfectWidener::VSTiPhasePerfectWidener()
 }
 
 void VSTiPhasePerfectWidener::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    crossover.prepare(sampleRate);
+    // Nombres premiers pour une décorrélation douce sans résonance
+    ap1.prepare(sampleRate, 13.7f, 0.5f);
+    ap2.prepare(sampleRate, 19.3f, 0.5f);
 }
 
 void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
@@ -36,21 +33,33 @@ void VSTiPhasePerfectWidener::processBlock(juce::AudioBuffer<float>& buffer, juc
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    float cutoffFreq = apvts.getRawParameterValue("cutoff")->load();
-    float widthParam = apvts.getRawParameterValue("width")->load();
-
-    crossover.setFreq(cutoffFreq);
+    float width = apvts.getRawParameterValue("width")->load();
 
     for (int i = 0; i < numSamples; ++i) {
         float inL = channelDataL[i];
         float inR = channelDataR[i];
-        float outL = 0.0f, outR = 0.0f;
 
-        // Le moteur Linkwitz-Riley garantit un timbre flat sans comb filtering
-        crossover.process(inL, inR, outL, outR, widthParam);
+        // 1. Extraction
+        float mid = (inL + inR) * 0.5f;
+        float side = (inL - inR) * 0.5f;
 
-        channelDataL[i] = outL;
-        channelDataR[i] = outR;
+        // 2. Calcul des parts
+        // Ce qui reste stéréo :
+        float sideToKeep = side * width;
+        // Ce qui s'apprête à être perdu (la réverbe qui disparaît normalement) :
+        float sideLost = side * (1.0f - width);
+
+        // 3. Récupération
+        // On rend la réverbe perdue compatible avec le Mono
+        float recoveredReverb = ap2.processSample(ap1.processSample(sideLost));
+
+        // 4. Injection
+        // On ajoute la réverbe sauvée au centre de l'image
+        float newMid = mid + recoveredReverb;
+
+        // 5. Reconstruction parfaite
+        channelDataL[i] = newMid + sideToKeep;
+        channelDataR[i] = newMid - sideToKeep;
     }
 }
 
