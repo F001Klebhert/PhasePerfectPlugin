@@ -1,89 +1,64 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <vector>
 #include <cmath>
-#include <algorithm>
 
-class BiquadHPF {
+// Filtre All-Pass du 1er Ordre pour faire tourner la phase sans toucher au volume
+class FirstOrderAllPass {
 public:
     void prepare(double sr, float freq) {
-        float w0 = 6.28318530718f * freq / sr;
-        float alpha = std::sin(w0) / 1.41421356237f;
-        float cosw0 = std::cos(w0);
-        float a0 = 1.0f + alpha;
-        b0 = ((1.0f + cosw0) / 2.0f) / a0;
-        b1 = -(1.0f + cosw0) / a0;
-        b2 = ((1.0f + cosw0) / 2.0f) / a0;
-        a1 = (-2.0f * cosw0) / a0;
-        a2 = (1.0f - alpha) / a0;
-        x1 = x2 = y1 = y2 = 0.0f;
+        float tan_val = std::tan(3.14159265359f * freq / sr);
+        c = (tan_val - 1.0f) / (tan_val + 1.0f);
+        x1 = 0.0f;
+        y1 = 0.0f;
     }
     float process(float x) {
-        float y = b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2;
-        x2 = x1; x1 = x;
-        y2 = y1; y1 = y;
+        float y = c * x + x1 - c * y1;
+        x1 = x;
+        y1 = y;
         return y;
     }
 private:
-    float b0=0, b1=0, b2=0, a1=0, a2=0;
-    float x1=0, x2=0, y1=0, y2=0;
+    float c = 0.0f;
+    float x1 = 0.0f, y1 = 0.0f;
 };
 
-class SchroederAllPass {
-public:
-    SchroederAllPass() : delayBuffer(4096, 0.0f) {}
-    void prepare(double sr, float delayMs, float feedbackGain) {
-        delaySamples = static_cast<int>(sr * (delayMs / 1000.0f));
-        gain = feedbackGain;
-        std::fill(delayBuffer.begin(), delayBuffer.end(), 0.0f);
-        writePos = 0;
-    }
-    float process(float input) {
-        int readPos = writePos - delaySamples;
-        if (readPos < 0) readPos += delayBuffer.size();
-        float delayed = delayBuffer[readPos];
-        float out = -gain * input + delayed + gain * delayed;
-        delayBuffer[writePos] = input + gain * delayed;
-        writePos++;
-        if (writePos >= delayBuffer.size()) writePos = 0;
-        return out;
-    }
-private:
-    std::vector<float> delayBuffer;
-    int writePos = 0;
-    int delaySamples = 0;
-    float gain = 0.6f;
-};
-
-// Le moteur qui cache l'énergie stéréo dans le centre
-class MonoSurvivalEngine {
+// Réseau de Hilbert : Force la Gauche et la Droite à être écartées de 90°
+class HilbertOrthogonalNetwork {
 public:
     void prepare(double sr) {
-        hpf.prepare(sr, 150.0f); // Ne pas polluer la basse Mono
-        ap1.prepare(sr, 7.1f, 0.6f);
-        ap2.prepare(sr, 11.3f, 0.6f);
-        ap3.prepare(sr, 13.7f, 0.6f);
+        // Fréquences magiques pour le canal GAUCHE
+        apL1.prepare(sr, 14.32f);
+        apL2.prepare(sr, 112.55f);
+        apL3.prepare(sr, 804.53f);
+        apL4.prepare(sr, 5013.3f);
+
+        // Fréquences magiques pour le canal DROIT
+        apR1.prepare(sr, 34.09f);
+        apR2.prepare(sr, 276.01f);
+        apR3.prepare(sr, 1980.0f);
+        apR4.prepare(sr, 15300.0f);
     }
-    float process(float sideSignal) {
-        // HPF -> Diffusion Haas totale
-        return ap3.process(ap2.process(ap1.process(hpf.process(sideSignal))));
+    
+    void process(float inL, float inR, float& outL, float& outR) {
+        outL = apL4.process(apL3.process(apL2.process(apL1.process(inL))));
+        outR = apR4.process(apR3.process(apR2.process(apR1.process(inR))));
     }
 private:
-    BiquadHPF hpf;
-    SchroederAllPass ap1, ap2, ap3;
+    FirstOrderAllPass apL1, apL2, apL3, apL4;
+    FirstOrderAllPass apR1, apR2, apR3, apR4;
 };
 
-class MasteringMonoTranslator : public juce::AudioProcessor {
+class OrthogonalMaster : public juce::AudioProcessor {
 public:
-    MasteringMonoTranslator();
-    ~MasteringMonoTranslator() override = default;
+    OrthogonalMaster();
+    ~OrthogonalMaster() override = default;
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override { return new juce::GenericAudioProcessorEditor(*this); }
     bool hasEditor() const override { return true; }
-    const juce::String getName() const override { return "Mastering Mono Translator"; }
+    const juce::String getName() const override { return "Orthogonal Mono Sum"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -97,6 +72,6 @@ public:
     void setStateInformation(const void*, int) override {}
 private:
     juce::AudioProcessorValueTreeState apvts;
-    MonoSurvivalEngine engine;
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MasteringMonoTranslator)
+    HilbertOrthogonalNetwork hilbert;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OrthogonalMaster)
 };
