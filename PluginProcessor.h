@@ -3,62 +3,38 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <cmath>
 
-// Filtre All-Pass du 1er Ordre pour faire tourner la phase sans toucher au volume
-class FirstOrderAllPass {
+// Filtre ultra-transparent (State Variable Filter) pour les graves du Side
+class TransparentHPF {
 public:
-    void prepare(double sr, float freq) {
-        float tan_val = std::tan(3.14159265359f * freq / sr);
-        c = (tan_val - 1.0f) / (tan_val + 1.0f);
-        x1 = 0.0f;
-        y1 = 0.0f;
+    void prepare(double sr) { sampleRate = sr; }
+    void setCutoff(float freq) {
+        float w0 = 6.28318530718f * freq / sampleRate;
+        g = std::tan(w0 / 2.0f);
+        R = 1.0f; // Q = 0.5 (Très doux, aucune résonance)
     }
     float process(float x) {
-        float y = c * x + x1 - c * y1;
-        x1 = x;
-        y1 = y;
-        return y;
+        float hp = (x - (g + R)*s1 - s2) / (1.0f + g*(g + R));
+        float bp = g * hp + s1;
+        s1 = g * hp + bp;
+        s2 = g * bp + s2;
+        return hp; // On ne garde que les aigus (High Pass)
     }
 private:
-    float c = 0.0f;
-    float x1 = 0.0f, y1 = 0.0f;
+    float sampleRate = 44100.0f;
+    float g = 0.0f, R = 1.0f;
+    float s1 = 0.0f, s2 = 0.0f;
 };
 
-// Réseau de Hilbert : Force la Gauche et la Droite à être écartées de 90°
-class HilbertOrthogonalNetwork {
+class OrchestralConsole : public juce::AudioProcessor {
 public:
-    void prepare(double sr) {
-        // Fréquences magiques pour le canal GAUCHE
-        apL1.prepare(sr, 14.32f);
-        apL2.prepare(sr, 112.55f);
-        apL3.prepare(sr, 804.53f);
-        apL4.prepare(sr, 5013.3f);
-
-        // Fréquences magiques pour le canal DROIT
-        apR1.prepare(sr, 34.09f);
-        apR2.prepare(sr, 276.01f);
-        apR3.prepare(sr, 1980.0f);
-        apR4.prepare(sr, 15300.0f);
-    }
-    
-    void process(float inL, float inR, float& outL, float& outR) {
-        outL = apL4.process(apL3.process(apL2.process(apL1.process(inL))));
-        outR = apR4.process(apR3.process(apR2.process(apR1.process(inR))));
-    }
-private:
-    FirstOrderAllPass apL1, apL2, apL3, apL4;
-    FirstOrderAllPass apR1, apR2, apR3, apR4;
-};
-
-class OrthogonalMaster : public juce::AudioProcessor {
-public:
-    OrthogonalMaster();
-    ~OrthogonalMaster() override = default;
+    OrchestralConsole();
+    ~OrchestralConsole() override = default;
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override { return new juce::GenericAudioProcessorEditor(*this); }
     bool hasEditor() const override { return true; }
-    const juce::String getName() const override { return "Orthogonal Mono Sum"; }
+    const juce::String getName() const override { return "Pure Orchestral M/S"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -72,6 +48,6 @@ public:
     void setStateInformation(const void*, int) override {}
 private:
     juce::AudioProcessorValueTreeState apvts;
-    HilbertOrthogonalNetwork hilbert;
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OrthogonalMaster)
+    TransparentHPF sideHPF;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(OrchestralConsole)
 };
