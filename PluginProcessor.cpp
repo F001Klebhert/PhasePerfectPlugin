@@ -1,28 +1,27 @@
 #include "PluginProcessor.h"
 #include <memory>
+#include <cmath>
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Gain du Centre (Mid) - Les instruments principaux
+    // Largeur Trigonométrique (Conserve 100% de la réverbe et des transitoires)
+    // 1.0 = Bypass Parfait. 0.0 = Mono Parfait.
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("midGain", 1), "Mid Gain (dB)", 
-        juce::NormalisableRange<float>(-12.0f, 6.0f, 0.1f), 0.0f));
+        juce::ParameterID("width", 1), "Acoustic Width", 
+        juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f));
         
-    // Gain des Côtés (Side) - La réverbe, l'espace
+    // L'équilibre Psychoacoustique (La Loi du Centre)
+    // 0.0 = La réverbe est préservée à 100% absolue, mais le centre augmente un peu en mono
+    // 1.0 = Le centre est préservé à 100%, mais la réverbe baisse légèrement
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("sideGain", 1), "Side Gain (dB)", 
-        juce::NormalisableRange<float>(-12.0f, 6.0f, 0.1f), 0.0f));
-
-    // Nettoyage des graves sur les côtés (Pour la survie Mono des contrebasses)
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("sideHPF", 1), "Side HPF (Hz)", 
-        juce::NormalisableRange<float>(20.0f, 300.0f, 1.0f, 0.5f), 100.0f));
+        juce::ParameterID("centerComp", 1), "Center Mono Balance", 
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f));
         
     return layout;
 }
 
-OrchestralConsole::OrchestralConsole()
+AcousticTrueFold::AcousticTrueFold()
     : juce::AudioProcessor(juce::AudioProcessor::BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
@@ -30,47 +29,39 @@ OrchestralConsole::OrchestralConsole()
 {
 }
 
-void OrchestralConsole::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    sideHPF.prepare(sampleRate);
-}
-
-void OrchestralConsole::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+void AcousticTrueFold::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
     juce::ScopedNoDenormals noDenormals;
 
     int numSamples = buffer.getNumSamples();
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    // Convertir les dB en multiplicateurs de volume pur (Transparence totale)
-    float midGainDb = apvts.getRawParameterValue("midGain")->load();
-    float sideGainDb = apvts.getRawParameterValue("sideGain")->load();
-    float midLinear = std::pow(10.0f, midGainDb / 20.0f);
-    float sideLinear = std::pow(10.0f, sideGainDb / 20.0f);
-    
-    float hpfFreq = apvts.getRawParameterValue("sideHPF")->load();
-    sideHPF.setCutoff(hpfFreq);
+    float width = apvts.getRawParameterValue("width")->load();
+    float comp = apvts.getRawParameterValue("centerComp")->load();
+
+    // 1. Calcul de l'angle de Rotation de Blumlein (en radians)
+    // À 1.0 (Stéréo), l'angle est 0°. À 0.0 (Mono), l'angle est 45°.
+    float angle = (1.0f - width) * (3.14159265359f / 4.0f);
+    float cos_a = std::cos(angle);
+    float sin_a = std::sin(angle);
+
+    // 2. Calcul du gain pour équilibrer la sommation du centre
+    float center_boost = cos_a + sin_a; // Vaut 1.414 en Mono pur (+3dB)
+    float norm = 1.0f / (1.0f + comp * (center_boost - 1.0f));
 
     for (int i = 0; i < numSamples; ++i) {
         float inL = channelDataL[i];
         float inR = channelDataR[i];
 
-        // 1. Encodage Mid/Side (Mathématique pure, ZERO déphasage)
-        float mid = (inL + inR) * 0.5f;
-        float side = (inL - inR) * 0.5f;
+        // 3. Matrice de puissance constante (Zéro altération de phase, zéro délai)
+        float outL = (inL * cos_a + inR * sin_a) * norm;
+        float outR = (inR * cos_a + inL * sin_a) * norm;
 
-        // 2. Traitement d'égalisation et de gain
-        // On enlève les extrêmes graves du côté pour garantir l'impact en Mono
-        side = sideHPF.process(side);
-
-        mid *= midLinear;
-        side *= sideLinear;
-
-        // 3. Décodage vers les enceintes
-        channelDataL[i] = mid + side;
-        channelDataR[i] = mid - side;
+        channelDataL[i] = outL;
+        channelDataR[i] = outR;
     }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
-    return new OrchestralConsole();
+    return new AcousticTrueFold();
 }
