@@ -4,20 +4,20 @@
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     
-    // Le taux d'injection de la réverbe secrète (Mono Survival)
+    // 1.0 = La largeur stéréo est 100% INTACTE (Bypass visuel parfait). 
     layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("phantom", 1), "Phantom Mono Survival", 
+        juce::ParameterID("width", 1), "TrueFold Width", 
+        juce::NormalisableRange<float>(0.0f, 1.5f, 0.01f), 1.0f));
+
+    // L'intensité des Tails sauvés en Mono (0.5 = naturel, 1.0 = massif)
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("tailSurvival", 1), "Tail Mono Survival", 
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f));
-        
-    // Permet de forcer la largeur stéréo d'origine (1.0 = Intacte)
-    layout.add(std::make_unique<juce::AudioParameterFloat>(
-        juce::ParameterID("width", 1), "Stereo Width", 
-        juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f));
         
     return layout;
 }
 
-AcousticMirageMaster::AcousticMirageMaster()
+SymphonicApexMaster::SymphonicApexMaster()
     : juce::AudioProcessor(juce::AudioProcessor::BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
@@ -25,62 +25,58 @@ AcousticMirageMaster::AcousticMirageMaster()
 {
 }
 
-void AcousticMirageMaster::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    // Délais de salle naturels (13ms et 19ms évitent tout effet métallique)
+void SymphonicApexMaster::prepareToPlay(double sampleRate, int samplesPerBlock) {
+    tailDetector.prepare(sampleRate);
     delayL.prepare(sampleRate, 13.0f);
     delayR.prepare(sampleRate, 19.0f);
     
-    // Filtres pour rendre l'écho fantôme parfaitement doux
     lpfL.prepare(sampleRate); lpfL.setFreq(6000.0f, true);
     lpfR.prepare(sampleRate); lpfR.setFreq(6000.0f, true);
     hpfL.prepare(sampleRate); hpfL.setFreq(200.0f, false);
     hpfR.prepare(sampleRate); hpfR.setFreq(200.0f, false);
 }
 
-void AcousticMirageMaster::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+void SymphonicApexMaster::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
     juce::ScopedNoDenormals noDenormals;
 
     int numSamples = buffer.getNumSamples();
     auto* channelDataL = buffer.getWritePointer(0);
     auto* channelDataR = buffer.getWritePointer(1);
 
-    float phantomGain = apvts.getRawParameterValue("phantom")->load();
-    float widthGain = apvts.getRawParameterValue("width")->load();
+    float width = apvts.getRawParameterValue("width")->load();
+    float tailGain = apvts.getRawParameterValue("tailSurvival")->load();
+
+    // Matrice TrueFold (#14) pour une fluidité parfaite du volume
+    float angle = (1.0f - width) * (3.14159265359f / 4.0f);
+    float cos_a = std::cos(angle);
+    float sin_a = std::sin(angle);
+    float norm = 1.0f / (1.0f + 0.5f * ((cos_a + sin_a) - 1.0f));
 
     for (int i = 0; i < numSamples; ++i) {
         float inL = channelDataL[i];
         float inR = channelDataR[i];
 
-        // 1. Matrice transparente
-        float mid = (inL + inR) * 0.5f;
-        float side = (inL - inR) * 0.5f;
+        // 1. La base fluide TrueFold (Transitoires 100% conservés)
+        float baseL = (inL * cos_a + inR * sin_a) * norm;
+        float baseR = (inR * cos_a + inL * sin_a) * norm;
 
-        // 2. Création de l'Espace Fantôme (Acoustic Mirage)
-        // On copie la réverbe (side), on la retarde, on la réchauffe
-        float phantomL = hpfL.process(lpfL.process(delayL.process(side)));
-        float phantomR = hpfR.process(lpfR.process(delayR.process(side)));
-
-        // 3. Application du volume fantôme
-        phantomL *= phantomGain;
-        phantomR *= phantomGain;
-
-        // 4. Mixage Final (Le secret est ici)
-        // La stéréo est TOTALEMENT conservée (mid + side*width).
-        // On y ajoute simplement le mirage fantôme en fond de salle.
-        channelDataL[i] = mid + (side * widthGain) + phantomL;
-        channelDataR[i] = mid - (side * widthGain) + phantomR;
+        // 2. Détection Intelligente : On extrait l'espace, et on repère les transitoires
+        float side = (baseL - baseR) * 0.5f;
+        float tailMask = tailDetector.process(side);
         
-        /* LA PREUVE MATHÉMATIQUE DU MIRACLE :
-           En écoute Mono (L + R) :
-           (mid + side + phantomL) + (mid - side + phantomR)
-           = 2*mid + phantomL + phantomR
-           Le side d'origine s'annule toujours (physique respectée),
-           MAIS les réverbes fantômes (phantomL et phantomR) SURVIVENT !
-           Le son mono est luxuriant, et la stéréo d'origine était intacte.
-        */
+        // 3. Le Miracle : On annule l'effet fantôme PENDANT les attaques !
+        float safeSide = side * tailMask; 
+
+        // 4. Seules les queues de réverbes douces passent dans la machine de survie Mono
+        float phantomL = hpfL.process(lpfL.process(delayL.process(safeSide)));
+        float phantomR = hpfR.process(lpfR.process(delayR.process(safeSide)));
+
+        // 5. Reconstruction finale
+        channelDataL[i] = baseL + (phantomL * tailGain);
+        channelDataR[i] = baseR + (phantomR * tailGain);
     }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
-    return new AcousticMirageMaster();
+    return new SymphonicApexMaster();
 }
